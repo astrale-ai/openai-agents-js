@@ -61,4 +61,39 @@ describe('StreamedRunResult', () => {
     await expect(sr.completed).rejects.toBe(err);
     expect(sr.error).toBe(err);
   });
+
+  it('closes stream gracefully when aborted during iteration', async () => {
+    const state = createState();
+    const controller = new AbortController();
+    const sr = new StreamedRunResult({ state, signal: controller.signal });
+
+    const iterator = sr[Symbol.asyncIterator]();
+    const nextPromise = iterator.next();
+
+    controller.abort();
+
+    await expect(nextPromise).resolves.toEqual({
+      done: true,
+      value: undefined,
+    });
+    await expect(sr.completed).resolves.toBeUndefined();
+    expect(sr.cancelled).toBe(true);
+    expect(sr.error).toBe(null);
+  });
+
+  it('handles already-aborted signal without locking stream', async () => {
+    const state = createState();
+    const controller = new AbortController();
+    controller.abort();
+    const sr = new StreamedRunResult({ state, signal: controller.signal });
+
+    const iterator = sr[Symbol.asyncIterator]();
+
+    await expect(iterator.next()).resolves.toEqual({
+      done: true,
+      value: undefined,
+    });
+    await expect(sr.completed).resolves.toBeUndefined();
+    expect(sr.cancelled).toBe(true);
+  });
 });
