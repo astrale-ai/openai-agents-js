@@ -243,6 +243,7 @@ export class StreamedRunResult<
   #completedPromiseResolve: (() => void) | undefined;
   #completedPromiseReject: ((err: unknown) => void) | undefined;
   #cancelled: boolean = false;
+  #abortHandler?: () => void;
 
   constructor(
     result: {
@@ -255,13 +256,29 @@ export class StreamedRunResult<
     this.#signal = result.signal;
 
     if (this.#signal) {
-      this.#signal.addEventListener('abort', async () => {
-        await this.#readableStream.cancel();
-      });
+      this.#abortHandler = () => {
+        if (this.#cancelled) {
+          return;
+        }
+        this.#cancelled = true;
+        this.#closeStream();
+      };
+
+      if (this.#signal.aborted) {
+        this.#abortHandler();
+      } else {
+        this.#signal.addEventListener('abort', this.#abortHandler, {
+          once: true,
+        });
+      }
     }
 
     this.#readableStream = new _ReadableStream<RunStreamEvent>({
       start: (controller) => {
+        if (this.cancelled) {
+          controller.close();
+          return;
+        }
         this.#readableController = controller;
       },
       cancel: () => {
@@ -273,6 +290,20 @@ export class StreamedRunResult<
       this.#completedPromiseResolve = resolve;
       this.#completedPromiseReject = reject;
     });
+  }
+
+  #closeStream() {
+    if (this.#readableController) {
+      try {
+        this.#readableController.close();
+      } catch (err) {
+        logger.debug(`Error closing stream controller: ${err}`);
+      }
+      this.#readableController = undefined;
+    }
+    this.#completedPromiseResolve?.();
+    this.#completedPromiseResolve = undefined;
+    this.#completedPromiseReject = undefined;
   }
 
   /**
@@ -290,10 +321,8 @@ export class StreamedRunResult<
    * Indicates that the stream has been completed
    */
   _done() {
-    if (!this.cancelled && this.#readableController) {
-      this.#readableController.close();
-      this.#readableController = undefined;
-      this.#completedPromiseResolve?.();
+    if (!this.cancelled) {
+      this.#closeStream();
     }
   }
 
@@ -308,6 +337,8 @@ export class StreamedRunResult<
     }
     this.#error = err;
     this.#completedPromiseReject?.(err);
+    this.#completedPromiseResolve = undefined;
+    this.#completedPromiseReject = undefined;
     this.#completedPromise.catch((e) => {
       logger.debug(`Resulted in an error: ${e}`);
     });
